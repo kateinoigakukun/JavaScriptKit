@@ -15,6 +15,5 @@ class Benchmark {
             return .undefined
         }
         runner("\(title)/\(name)", jsBody)
-        jsBody.release()
     }
 }

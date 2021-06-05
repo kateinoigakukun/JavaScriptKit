@@ -14,6 +14,13 @@ void swjs_call_host_function(const JavaScriptHostFuncRef host_func_ref,
     _call_host_function_impl(host_func_ref, argv, argc, callback_func);
 }
 
+void _free_host_function_impl(const JavaScriptHostFuncRef host_func_ref);
+
+__attribute__((export_name("swjs_free_host_function")))
+void swjs_free_host_function(const JavaScriptHostFuncRef host_func_ref) {
+    _free_host_function_impl(host_func_ref);
+}
+
 __attribute__((export_name("swjs_prepare_host_function_call")))
 void *swjs_prepare_host_function_call(const int argc) {
     return malloc(argc * sizeof(RawJSValue));

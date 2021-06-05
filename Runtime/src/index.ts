@@ -29,6 +29,8 @@ interface SwiftRuntimeExportedFunctions {
         argc: number,
         callback_func_ref: ref
     ): void;
+
+    swjs_free_host_function(host_func_id: number): void;
 }
 
 enum JavaScriptValueKind {
@@ -118,11 +120,24 @@ class SwiftRuntimeHeap {
 export class SwiftRuntime {
     private instance: WebAssembly.Instance | null;
     private heap: SwiftRuntimeHeap;
+    private functionRegistry: FinalizationRegistry;
     private version: number = 701;
 
     constructor() {
         this.instance = null;
         this.heap = new SwiftRuntimeHeap();
+        if (typeof FinalizationRegistry !== "undefined") {
+            this.functionRegistry = new FinalizationRegistry(
+                this.handleFree.bind(this)
+            );
+        }
+    }
+
+    handleFree(id: unknown) {
+        if (!this.instance || typeof id !== "number") return;
+        const exports = (this.instance
+            .exports as any) as SwiftRuntimeExportedFunctions;
+        exports.swjs_free_host_function(id);
     }
 
     setInstance(instance: WebAssembly.Instance) {
@@ -452,12 +467,14 @@ export class SwiftRuntime {
                 host_func_id: number,
                 func_ref_ptr: pointer
             ) => {
-                const func_ref = this.heap.retain(function () {
+                const func = function () {
                     return callHostFunction(
                         host_func_id,
                         Array.prototype.slice.call(arguments)
                     );
-                });
+                };
+                const func_ref = this.heap.retain(func);
+                this.functionRegistry.register(func, func_ref);
                 writeUint32(func_ref_ptr, func_ref);
             },
             swjs_call_throwing_new: (

@@ -191,36 +191,36 @@ try test("Closure Lifetime") {
             return arguments[0]
         }
         try expectEqual(evalClosure(c1, JSValue.number(1.0)), .number(1.0))
+    }
+
+    do {
+        let c1 = JSClosure { _ in .undefined }
+        c1.release()
         c1.release()
     }
 
     do {
-        let c1 = JSClosure { arguments in
-            return arguments[0]
-        }
-        c1.release()
-        // Call a released closure
-        _ = try expectThrow(try evalClosure.throws(c1))
+        let array = JSObject.global.Array.function!.new()
+        _ = array.push!(JSClosure { _ in .number(3) })
+        try expectEqual(array[0].function!().number, 3.0)
     }
 
-    do {
-        let c1 = JSClosure { _ in
-            // JSClosure will be deallocated before `release()`
-            _ = JSClosure { _ in .undefined }
-            return .undefined
-        }
-        _ = try expectThrow(try evalClosure.throws(c1))
-        c1.release()
-    }
+//    do {
+//        let weakRef = { () -> JSObject in
+//            let c1 = JSClosure { _ in .undefined }
+//            return JSObject.global.WeakRef.function!.new(c1)
+//        }()
+//
+//        // unsure if this will actually work since GC may not run immediately
+//        try expectEqual(weakRef.deref!(), .undefined)
+//    }
 
     do {
         let c1 = JSOneshotClosure { _ in
             return .boolean(true)
         }
         try expectEqual(evalClosure(c1), .boolean(true))
-        // second call will cause `fatalError` that can be caught as a JavaScript exception
-        _ = try expectThrow(try evalClosure.throws(c1))
-        // OneshotClosure won't call fatalError even if it's deallocated before `release`
+        try expectEqual(evalClosure(c1), .boolean(true))
     }
 }
 
@@ -253,8 +253,6 @@ try test("Host Function Registration") {
     try expectEqual(call_host_1Func(), .number(1))
     try expectEqual(isHostFunc1Called, true)
 
-    hostFunc1.release()
-
     let hostFunc2 = JSClosure { (arguments) -> JSValue in
         do {
             let input = try expectNumber(arguments[0])
@@ -266,7 +264,6 @@ try test("Host Function Registration") {
 
     try expectEqual(evalClosure(hostFunc2, 3), .number(6))
     _ = try expectString(evalClosure(hostFunc2, true))
-    hostFunc2.release()
 }
 
 try test("New Object Construction") {
@@ -375,19 +372,14 @@ try test("ObjectRef Lifetime") {
     // }
     // ```
 
-    let identity = JSClosure { $0[0] }
     let ref1 = getJSValue(this: .global, name: "globalObject1").object!
-    let ref2 = evalClosure(identity, ref1).object!
+    let ref2 = evalClosure(JSClosure { $0[0] }, ref1).object!
     try expectEqual(ref1.prop_2, .number(2))
     try expectEqual(ref2.prop_2, .number(2))
-    identity.release()
 }
 
 func closureScope() -> ObjectIdentifier {
-    let closure = JSClosure { _ in .undefined }
-    let result = ObjectIdentifier(closure)
-    closure.release()
-    return result
+    ObjectIdentifier(JSClosure { _ in .undefined })
 }
 
 try test("Closure Identifiers") {
@@ -513,7 +505,7 @@ try test("Timer") {
     interval = JSTimer(millisecondsDelay: 5, isRepeating: true) {
         // ensure that JSTimer is living
         try! expectNotNil(interval)
-        // verify that at least `timeoutMilliseconds * count` passed since the `timeout` 
+        // verify that at least `timeoutMilliseconds * count` passed since the `timeout`
         // timer started
         try! expectEqual(start + timeoutMilliseconds * count <= JSDate().valueOf(), true)
 
@@ -549,7 +541,8 @@ try test("Promise") {
         exp1.fulfill()
         return JSValue.undefined
     }
-    .catch { _ -> JSValue in
+    .catch { err -> JSValue in
+        print(err.object!.stack.string!)
         fatalError("Not fired due to no throw")
     }
     .finally { exp1.fulfill() }
