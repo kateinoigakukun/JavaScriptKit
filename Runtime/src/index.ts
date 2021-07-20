@@ -4,6 +4,8 @@ interface ExportedMemory {
 
 type ref = number;
 type pointer = number;
+// Function invocation call, using a host function ID and array of parameters
+type function_call = [number, any[]];
 
 interface GlobalVariable {}
 declare const window: GlobalVariable;
@@ -22,6 +24,7 @@ if (typeof globalThis !== "undefined") {
 interface SwiftRuntimeExportedFunctions {
     swjs_library_version(): number;
     swjs_prepare_host_function_call(size: number): pointer;
+    swjs_allocate_asyncify_buffer(size: number): pointer;
     swjs_cleanup_host_function_call(argv: pointer): void;
     swjs_call_host_function(
         host_func_id: number,
@@ -29,6 +32,29 @@ interface SwiftRuntimeExportedFunctions {
         argc: number,
         callback_func_ref: ref
     ): void;
+}
+
+/**
+ * Optional methods exposed by Wasm modules after running an `asyncify` pass,
+ * e.g. `wasm-opt -asyncify`.
+ * More details at [Pause and Resume WebAssembly with Binaryen's Asyncify](https://kripken.github.io/blog/wasm/2019/07/16/asyncify.html).
+*/
+interface AsyncifyExportedFunctions {
+    asyncify_start_rewind(stack: pointer): void;
+    asyncify_stop_rewind(): void;
+    asyncify_start_unwind(stack: pointer): void;
+    asyncify_stop_unwind(): void;
+}
+
+/**
+ * Runtime check if Wasm module exposes asyncify methods
+*/
+function isAsyncified(exports: any): exports is AsyncifyExportedFunctions {
+    const asyncifiedExports = exports as AsyncifyExportedFunctions;
+    return asyncifiedExports.asyncify_start_rewind !== undefined &&
+        asyncifiedExports.asyncify_stop_rewind !== undefined &&
+        asyncifiedExports.asyncify_start_unwind !== undefined &&
+        asyncifiedExports.asyncify_stop_unwind !== undefined;
 }
 
 enum JavaScriptValueKind {
@@ -115,22 +141,60 @@ class SwiftRuntimeHeap {
     }
 }
 
+// Helper methods for asyncify
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export class SwiftRuntime {
     private instance: WebAssembly.Instance | null;
     private heap: SwiftRuntimeHeap;
     private version: number = 701;
 
+    // Support Asyncified modules
+    private isSleeping: boolean;
+    private instanceIsAsyncified: boolean;
+    private resumeCallback: () => void;
+    private asyncifyBufferPointer: pointer | null;
+    // Keeps track of function calls requested while instance is sleeping
+    private pendingHostFunctionCalls: function_call[];
+
     constructor() {
         this.instance = null;
         this.heap = new SwiftRuntimeHeap();
+        this.isSleeping = false;
+        this.instanceIsAsyncified = false;
+        this.resumeCallback = () => { };
+        this.asyncifyBufferPointer = null;
+        this.pendingHostFunctionCalls = [];
     }
 
-    setInstance(instance: WebAssembly.Instance) {
+    /**
+     * Set the Wasm instance
+     * @param instance The instantiate Wasm instance
+     * @param resumeCallback Optional callback for resuming instance after
+     * unwinding and rewinding stack (for asyncified modules).
+     */
+    setInstance(instance: WebAssembly.Instance, resumeCallback?: () => void) {
         this.instance = instance;
+        if (resumeCallback) {
+            this.resumeCallback = resumeCallback;
+        }
         const exports = (this.instance
             .exports as any) as SwiftRuntimeExportedFunctions;
         if (exports.swjs_library_version() != this.version) {
             throw new Error("The versions of JavaScriptKit are incompatible.");
+        }
+        this.instanceIsAsyncified = isAsyncified(exports);
+    }
+
+    /**
+    * Report that the module has been started.
+    * Required for asyncified Wasm modules, so runtime has a chance to call required methods.
+    **/
+    didStart() {
+        if (this.instance && this.instanceIsAsyncified) {
+            const asyncifyExports = (this.instance
+                .exports as any) as AsyncifyExportedFunctions;
+            asyncifyExports.asyncify_stop_unwind();
         }
     }
 
@@ -144,6 +208,10 @@ export class SwiftRuntime {
         const callHostFunction = (host_func_id: number, args: any[]) => {
             if (!this.instance)
                 throw new Error("WebAssembly instance is not set yet");
+            if (this.isSleeping) {
+                this.pendingHostFunctionCalls.push([host_func_id, args]);
+                return;
+            }
             const exports = (this.instance
                 .exports as any) as SwiftRuntimeExportedFunctions;
             const argc = args.length;
@@ -326,6 +394,54 @@ export class SwiftRuntime {
                 result.push(decodeValue(kind, payload1, payload2));
             }
             return result;
+        };
+
+        const syncAwait = (
+            promise: Promise<any>,
+            kind_ptr?: pointer,
+            payload1_ptr?: pointer,
+            payload2_ptr?: pointer
+        ) => {
+            if (!this.instance || !this.instanceIsAsyncified) {
+                throw new Error("Calling async methods requires preprocessing Wasm module with `--asyncify`");
+            }
+            const exports = (this.instance.exports as any) as AsyncifyExportedFunctions;
+            if (this.isSleeping) {
+                // We are called as part of a resume/rewind. Stop sleeping.
+                exports.asyncify_stop_rewind();
+                this.isSleeping = false;
+                const pendingCalls = this.pendingHostFunctionCalls;
+                this.pendingHostFunctionCalls = [];
+                pendingCalls.forEach(call => {
+                    callHostFunction(call[0], call[1]);
+                });
+                return;
+            }
+
+            if (this.asyncifyBufferPointer == null) {
+                const runtimeExports = (this.instance
+                    .exports as any) as SwiftRuntimeExportedFunctions;
+                this.asyncifyBufferPointer = runtimeExports.swjs_allocate_asyncify_buffer(4096);
+            }
+            exports.asyncify_start_unwind(this.asyncifyBufferPointer!);
+            this.isSleeping = true;
+            const resume = () => {
+                exports.asyncify_start_rewind(this.asyncifyBufferPointer!);
+                this.resumeCallback();
+            };
+            promise
+                .then(result => {
+                    if (kind_ptr && payload1_ptr && payload2_ptr) {
+                        writeValue(result, kind_ptr, payload1_ptr, payload2_ptr, false);
+                    }
+                    resume();
+                })
+                .catch(error => {
+                    if (kind_ptr && payload1_ptr && payload2_ptr) {
+                        writeValue(error, kind_ptr, payload1_ptr, payload2_ptr, true);
+                    }
+                    queueMicrotask(resume);
+                });
         };
 
         return {
@@ -519,6 +635,18 @@ export class SwiftRuntime {
             },
             swjs_release: (ref: ref) => {
                 this.heap.release(ref);
+            },
+            swjs_sleep: (ms: number) => {
+                syncAwait(delay(ms));
+            },
+            swjs_sync_await: (
+                promiseRef: ref,
+                kind_ptr: pointer,
+                payload1_ptr: pointer,
+                payload2_ptr: pointer
+            ) => {
+                const promise: Promise<any> = this.heap.referenceHeap(promiseRef);
+                syncAwait(promise, kind_ptr, payload1_ptr, payload2_ptr);
             },
         };
     }

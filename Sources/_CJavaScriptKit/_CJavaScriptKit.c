@@ -32,4 +32,19 @@ int swjs_library_version() {
     return 701;
 }
 
+/// The structure pointing to the Asyncify stack buffer
+typedef struct __attribute__((packed)) {
+    void *start;
+    void *end;
+} _asyncify_data_pointer;
+
+__attribute__((export_name("swjs_allocate_asyncify_buffer")))
+void *_allocate_asyncify_buffer(const int size) {
+    void *buffer = malloc(size);
+    _asyncify_data_pointer *pointer = malloc(sizeof(_asyncify_data_pointer));
+    pointer->start = buffer;
+    pointer->end = (void *)((int)buffer + size);
+    return pointer;
+}
+
 #endif

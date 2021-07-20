@@ -258,6 +258,31 @@ extern void _create_typed_array(const JavaScriptObjectRef constructor,
                                 const void *elements_ptr, const int length,
                                 JavaScriptObjectRef *result_obj);
 
+/// Unwind Wasm module execution stack and rewind it after specified milliseconds,
+/// allowing JavaScript events to continue to be processed.
+/// **Important**: Wasm module must be [asyncified](https://emscripten.org/docs/porting/asyncify.html),
+/// otherwise JavaScriptKit's runtime will throw an exception.
+///
+/// @param ms Length of time in milliseconds to pause execution for.
+__attribute__((__import_module__("javascript_kit"),
+               __import_name__("swjs_sleep")))
+extern void _sleep(const int ms);
+
+/// Unwind Wasm module execution stack and rewind it after promise is fulfilled.
+/// **Important**: Wasm module must be [asyncified](https://emscripten.org/docs/porting/asyncify.html),
+/// otherwise JavaScriptKit's runtime will throw an exception.
+///
+/// @param promise target JavaScript promise.
+/// @param result_kind A result pointer of JavaScript value kind of returned result or thrown exception.
+/// @param result_payload1 A result pointer of first payload of JavaScript value of returned result or thrown exception.
+/// @param result_payload2 A result pointer of second payload of JavaScript value of returned result or thrown exception.
+__attribute__((__import_module__("javascript_kit"),
+               __import_name__("swjs_sync_await")))
+extern void _syncAwait(const JavaScriptObjectRef promise,
+                       JavaScriptValueKindAndFlags *result_kind,
+                       JavaScriptPayload1 *result_payload1,
+                       JavaScriptPayload2 *result_payload2);
+
 #endif
 
 #endif /* _CJavaScriptKit_h */

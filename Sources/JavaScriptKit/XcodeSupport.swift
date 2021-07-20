@@ -89,5 +89,19 @@ import _CJavaScriptKit
         _: Int32,
         _: UnsafeMutablePointer<JavaScriptObjectRef>!
     ) { fatalError() }
+    func _sleep(_: Int32) { fatalError() }
+    func _syncAwait(
+        _: JavaScriptObjectRef,
+        _: UnsafeMutablePointer<JavaScriptValueKindAndFlags>!,
+        _: UnsafeMutablePointer<JavaScriptPayload1>!,
+        _: UnsafeMutablePointer<JavaScriptPayload2>!
+    ) { fatalError() }
+    func _syncAwaitWithTimout(
+        _: JavaScriptObjectRef,
+        _: Int32,
+        _: UnsafeMutablePointer<JavaScriptValueKindAndFlags>!,
+        _: UnsafeMutablePointer<JavaScriptPayload1>!,
+        _: UnsafeMutablePointer<JavaScriptPayload2>!
+    ) { fatalError() }
 
 #endif
